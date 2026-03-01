@@ -6,3 +6,4 @@ langsmith
 duckduckgo-search
 chromadb
 streamlit
+ddgs

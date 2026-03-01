@@ -1,0 +1,8 @@
+langgraph
+langchain
+langchain-groq
+langchain-community
+langsmith
+duckduckgo-search
+chromadb
+streamlit

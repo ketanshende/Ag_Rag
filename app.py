@@ -1,4 +1,3 @@
-
 import os
 import json
 import streamlit as st
@@ -36,12 +35,7 @@ Always cite specific named sources for each recommendation."""
 MAX_RETRIES = 2
 
 # ─── Intent Detection ─────────────────────────────────────
-def is_agricultural_query(query: str, llm) -> tuple:
-    """
-    Classifies whether the input is agricultural or general conversation.
-    Returns (True, '') for agricultural queries.
-    Returns (False, response_text) for general conversation.
-    """
+def is_agricultural_query(query, llm):
     prompt = f"""A user sent this message to an agricultural technology 
 advisory tool for USA farmers:
 
@@ -64,7 +58,6 @@ coding questions, math problems, personal questions,
 questions completely unrelated to farming"""
 
     response = llm.invoke([HumanMessage(content=prompt)])
-
     try:
         content = response.content.strip()
         if "```" in content:
@@ -72,9 +65,7 @@ questions completely unrelated to farming"""
             if content.startswith("json"):
                 content = content[4:]
         parsed = json.loads(content.strip())
-        is_ag = parsed.get("is_agricultural", True)
-        conv_response = parsed.get("conversational_response", "")
-        return is_ag, conv_response
+        return parsed.get("is_agricultural", True), parsed.get("conversational_response", "")
     except:
         return True, ""
 
@@ -95,7 +86,7 @@ def build_graph(groq_key, langsmith_key):
     search = DuckDuckGoSearchResults()
 
     def enrich_query(state):
-        prompt = f"""A USA farmer asked: \"{state["farmer_query"]}\"
+        prompt = f"""A USA farmer asked: "{state["farmer_query"]}"
 
 Return JSON only — no preamble, no markdown, pure JSON:
 {{
@@ -321,34 +312,21 @@ def main():
         layout="wide"
     )
 
-    # ─── Sidebar ──────────────────────────────────────────
     with st.sidebar:
         st.title("⚙️ Configuration")
         st.markdown("---")
-
-        groq_key = st.text_input(
-            "Groq API Key",
-            type="password",
-            placeholder="gsk_..."
-        )
-        langsmith_key = st.text_input(
-            "LangSmith API Key",
-            type="password",
-            placeholder="lsv2_..."
-        )
-
+        groq_key = st.text_input("Groq API Key", type="password", placeholder="gsk_...")
+        langsmith_key = st.text_input("LangSmith API Key", type="password", placeholder="lsv2_...")
         st.markdown("---")
         st.markdown("**Get your free keys:**")
         st.markdown("🔑 [Groq Console](https://console.groq.com)")
         st.markdown("📊 [LangSmith](https://smith.langchain.com)")
         st.markdown("---")
         st.caption(
-            "This tool searches trusted USA agricultural sources "
-            "including USDA, university extension services, ATTRA, "
-            "and SARE to find alternatives to conventional farming practices."
+            "Searches trusted USA agricultural sources including USDA, "
+            "university extension services, ATTRA, and SARE."
         )
 
-    # ─── Main Interface ───────────────────────────────────
     st.title("🌾 AgTech Alternatives Finder")
     st.markdown(
         "Find modern, sustainable alternatives to conventional pest "
@@ -367,106 +345,72 @@ def main():
         """)
         return
 
-    # ─── Chat History ─────────────────────────────────────
-    # Store conversation history in session state
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # Display existing conversation
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-
-            # Show metadata for assistant messages if available
-            if message["role"] == "assistant" and "metadata" in message:
+            if message["role"] == "assistant" and message.get("metadata", {}).get("is_agricultural"):
                 meta = message["metadata"]
-                if meta.get("is_agricultural"):
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("Crop", meta.get("crop", "-").title())
-                    col2.metric("Pest / Weed", meta.get("pest_or_weed", "-").title())
-                    col3.metric("Region", meta.get("region", "-").title())
-                    col4.metric("Refinements", meta.get("retry_count", 0))
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Crop", meta.get("crop", "-").title())
+                col2.metric("Pest / Weed", meta.get("pest_or_weed", "-").title())
+                col3.metric("Region", meta.get("region", "-").title())
+                col4.metric("Refinements", meta.get("retry_count", 0))
+                with st.expander("🔍 How this answer was evaluated"):
+                    st.markdown(f"**Grade:** {meta.get('grade', '-').upper()}")
+                    st.markdown(f"**Reason:** {meta.get('grade_reason', '-')}")
+                    if meta.get("retry_count", 0) > 0:
+                        st.markdown(f"**What triggered retry:** {meta.get('missing_info', '-')}")
 
-                    with st.expander("🔍 How this answer was evaluated"):
-                        st.markdown(f"**Grade:** {meta.get('grade', '-').upper()}")
-                        st.markdown(f"**Reason:** {meta.get('grade_reason', '-')}")
-                        if meta.get("retry_count", 0) > 0:
-                            st.markdown(f"**What triggered retry:** {meta.get('missing_info', '-')}")
-
-    # ─── Chat Input ───────────────────────────────────────
     farmer_input = st.chat_input(
         "Ask about pest management, weeding alternatives, or anything farming related..."
     )
 
     if farmer_input:
-
-        # Display user message
         with st.chat_message("user"):
             st.markdown(farmer_input)
+        st.session_state.messages.append({"role": "user", "content": farmer_input})
 
-        # Add to history
-        st.session_state.messages.append({
-            "role": "user",
-            "content": farmer_input
-        })
-
-        # Build graph and get LLM instance
         graph, llm = build_graph(groq_key, langsmith_key)
-
-        # ─── Intent Detection ──────────────────────────────
         is_ag, conv_response = is_agricultural_query(farmer_input, llm)
 
         with st.chat_message("assistant"):
-
             if not is_ag:
-                # General conversation — respond directly
                 st.markdown(conv_response)
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": conv_response,
                     "metadata": {"is_agricultural": False}
                 })
-
             else:
-                # Agricultural query — run full graph
                 with st.spinner("🔍 Searching trusted agricultural sources..."):
                     try:
                         result = graph.invoke(AgRagState(
                             farmer_query=farmer_input,
-                            enriched_query="",
-                            crop="",
-                            pest_or_weed="",
-                            region="",
-                            constraints="",
-                            retrieved_docs="",
-                            sources=[],
-                            draft_answer="",
-                            grade="",
-                            grade_reason="",
-                            missing_info="",
-                            refined_query="",
-                            retry_count=0,
-                            final_answer=""
+                            enriched_query="", crop="", pest_or_weed="",
+                            region="", constraints="", retrieved_docs="",
+                            sources=[], draft_answer="", grade="",
+                            grade_reason="", missing_info="",
+                            refined_query="", retry_count=0, final_answer=""
                         ))
 
-                        # Show metrics
                         col1, col2, col3, col4 = st.columns(4)
                         col1.metric("Crop", result["crop"].title())
                         col2.metric("Pest / Weed", result["pest_or_weed"].title())
                         col3.metric("Region", result["region"].title())
                         col4.metric("Refinements", result["retry_count"])
-
                         st.markdown("---")
                         st.markdown(result["final_answer"])
 
                         with st.expander("🔍 How this answer was evaluated"):
-                            st.markdown(f"**Grade:** {result[\'grade\'].upper()}")
-                            st.markdown(f"**Reason:** {result[\'grade_reason\']}")
+                            st.markdown(f"**Grade:** {result['grade'].upper()}")
+                            st.markdown(f"**Reason:** {result['grade_reason']}")
                             if result["retry_count"] > 0:
-                                st.markdown(f"**Retries:** {result[\'retry_count\']}")
-                                st.markdown(f"**What triggered retry:** {result[\'missing_info\']}")
+                                st.markdown(f"**Retries:** {result['retry_count']}")
+                                st.markdown(f"**What triggered retry:** {result['missing_info']}")
 
-                        # Add to history with metadata
                         st.session_state.messages.append({
                             "role": "assistant",
                             "content": result["final_answer"],
@@ -483,7 +427,7 @@ def main():
                         })
 
                     except Exception as e:
-                        error_msg = f"Something went wrong: {str(e)}. Check your API keys and try again."
+                        error_msg = f"Something went wrong: {str(e)}"
                         st.error(error_msg)
                         st.session_state.messages.append({
                             "role": "assistant",

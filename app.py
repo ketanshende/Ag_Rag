@@ -26,9 +26,9 @@ class AgRagState(TypedDict):
     final_answer: str
 
 # ─── System Prompt ────────────────────────────────────────
-SYSTEM_PROMPT = """You are an expert agricultural technology advisor 
-specializing in USA farming practices. You help farmers find modern, 
-sustainable, and autonomous alternatives to conventional pest management 
+SYSTEM_PROMPT = """You are an expert agricultural technology advisor
+specializing in USA farming practices. You help farmers find modern,
+sustainable, and autonomous alternatives to conventional pest management
 and weeding practices. Answer based ONLY on retrieved context provided.
 Always cite specific named sources for each recommendation."""
 
@@ -36,7 +36,7 @@ MAX_RETRIES = 2
 
 # ─── Intent Detection ─────────────────────────────────────
 def is_agricultural_query(query, llm):
-    prompt = f"""A user sent this message to an agricultural technology 
+    prompt = f"""A user sent this message to an agricultural technology
 advisory tool for USA farmers:
 
 "{query}"
@@ -48,12 +48,12 @@ Classify this message and return JSON only — no preamble, no markdown:
     "conversational_response": "if not agricultural, a friendly short response that explains this tool helps USA farmers find alternatives to conventional farming practices — otherwise empty string"
 }}
 
-Examples of AGRICULTURAL: questions about crops, pests, weeds, 
-farm equipment, herbicides, pesticides, irrigation, harvesting, 
+Examples of AGRICULTURAL: questions about crops, pests, weeds,
+farm equipment, herbicides, pesticides, irrigation, harvesting,
 soil management, organic certification, farm costs, weed control,
 biological alternatives, precision agriculture, autonomous farming
 
-Examples of NOT AGRICULTURAL: greetings, general chat, 
+Examples of NOT AGRICULTURAL: greetings, general chat,
 coding questions, math problems, personal questions,
 questions completely unrelated to farming"""
 

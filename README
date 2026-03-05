@@ -1,0 +1,416 @@
+# 🌾 AgTech Alternatives Finder
+
+> A RAG-powered advisory system that helps USA farmers discover modern, sustainable, and autonomous alternatives to conventional pest management and weeding practices.
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [The Problem This Solves](#the-problem-this-solves)
+- [How It Works](#how-it-works)
+- [System Architecture](#system-architecture)
+- [The LangGraph Pipeline](#the-langgraph-pipeline)
+- [Self-Evaluation Loop](#self-evaluation-loop)
+- [Tech Stack](#tech-stack)
+- [Project Structure](#project-structure)
+- [Getting Started](#getting-started)
+- [Deploying to Streamlit Community Cloud](#deploying-to-streamlit-community-cloud)
+- [API Keys Required](#api-keys-required)
+- [Example Queries](#example-queries)
+- [Monitoring with LangSmith](#monitoring-with-langsmith)
+- [Development Workflow](#development-workflow)
+- [Current Limitations](#current-limitations)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+
+---
+
+## Overview
+
+AgTech Alternatives Finder is an AI-powered retrieval-augmented generation (RAG) system built for USA farmers. It takes a farmer's natural language description of their current farming practice and returns structured, cited recommendations for modern alternatives — covering biological, mechanical, autonomous, and precision agriculture technologies.
+
+The system is designed to lower the barrier for farmers looking to transition away from conventional chemical-heavy practices toward more sustainable, cost-effective, and autonomous approaches.
+
+---
+
+## The Problem This Solves
+
+Farmers face a growing need to find alternatives to conventional practices for several reasons:
+
+- **Rising input costs** — herbicide and pesticide costs are a top concern for 48% of USA farmers in 2024
+- **Increasing resistance** — weed and pest resistance to conventional chemicals is reducing efficacy
+- **Regulatory pressure** — mounting restrictions on chemical use at state and federal level
+- **Labor shortages** — availability of farm labor continues to decline
+- **Market demands** — buyers and consumers increasingly require reduced chemical residues
+
+The challenge is that alternative technologies are fragmented across university extension publications, USDA research, company websites, and academic papers. A farmer in Iowa looking for biological alternatives to chlorpyrifos for aphid control on corn has no single place to go.
+
+This tool is that single place.
+
+---
+
+## How It Works
+
+A farmer describes their situation in plain language:
+
+> *"I spray chlorpyrifos on my 80 acre corn farm in Iowa for aphids. I am interested in biological and autonomous alternatives that are EPA registered and work at my scale."*
+
+The system:
+
+1. Extracts the crop, pest, region, scale, and constraints from the question
+2. Searches the web for relevant content from trusted USA agricultural sources
+3. Generates a structured answer with named technologies, how they work, costs, and availability
+4. Grades its own answer against a quality rubric
+5. If the answer is not good enough, refines the search query and tries again
+6. Returns the final answer with citations and an explanation of how it was evaluated
+
+The entire process is transparent — farmers can see exactly how the answer was graded, how many search refinements happened, and what sources were used.
+
+---
+
+## System Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                  Farmer Interface                    │
+│              Streamlit Web Application               │
+│         (Deployed on Streamlit Community Cloud)      │
+└─────────────────────┬───────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│              Intent Detection Gate                   │
+│   Classifies query as agricultural or general chat   │
+│   General chat → direct response, no graph run       │
+│   Agricultural → full pipeline                       │
+└─────────────────────┬───────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│            LangGraph Agentic RAG Pipeline            │
+│                                                     │
+│  Node 1: Query Enrichment                           │
+│  Node 2: Retrieval (DuckDuckGo)                     │
+│  Node 3: Answer Generation (Groq — Llama 3.3 70B)   │
+│  Node 4: Answer Grading (Self-evaluation)            │
+│  Node 5: Query Refinement (on retry)                │
+│  Node 6: Output                                     │
+└─────────────────────┬───────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│                   LangSmith                         │
+│   Full execution trace — every node, every retry    │
+│   Token usage, latency, grade verdicts, costs       │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## The LangGraph Pipeline
+
+The system is built as a LangGraph state graph — a directed graph where each node is a discrete processing step and edges define the flow between steps. The key feature is a **conditional edge** after the grading node that creates a self-evaluation loop.
+
+```
+enrich_query
+      │
+      ▼
+   retrieve  ◄────────────────────────────┐
+      │                                   │
+      ▼                                   │
+generate_answer                           │
+      │                                   │
+      ▼                                   │
+grade_answer                              │
+      │                                   │
+   good? ──── Yes ──► output ──► END      │
+      │                                   │
+      No                                  │
+      │                                   │
+   retries remaining? ── Yes ──► refine_query
+      │
+      No
+      │
+      ▼
+   output (with uncertainty flag) ──► END
+```
+
+### Node Descriptions
+
+**Node 1 — Query Enrichment**
+Extracts structured context from the farmer's raw question using the LLM. Returns crop type, pest or weed species, US state or region, constraints (organic certification, budget, scale), and an expanded search query optimized for agricultural content retrieval.
+
+**Node 2 — Retrieval**
+Executes three targeted DuckDuckGo searches per attempt to maximize content coverage. On first attempt uses the enriched query. On retry uses the refined query generated by Node 5. Combines all results into a single context block.
+
+**Node 3 — Answer Generation**
+Generates a structured answer using only the retrieved content — never inventing information not present in the sources. Output follows a strict format covering: operation identified, current practice, alternative technologies found (each with mechanism, benefits, limitations, cost, availability, and source), best recommendation for the farmer's specific situation, and follow-up questions.
+
+**Node 4 — Answer Grading**
+An independent LLM call that evaluates the draft answer against a strict quality rubric. Grades as POOR if any of these are true: no specific named technologies, sources are dates rather than named organizations, no cost information, answer does not address the stated farm scale, answer is under 200 words, or recommendations are not confirmed as USA-available. Returns a structured verdict with the specific reason and exactly what information is missing.
+
+**Node 5 — Query Refinement**
+Generates a targeted second search query based precisely on what the grader said was missing. The refined query is meaningfully different from the first — focused on the specific gap rather than a generic retry.
+
+**Node 6 — Output**
+Prepares the final answer for delivery. If grade is good, returns the draft answer directly. If maximum retries were reached, prepends an honest uncertainty flag advising the farmer to verify with their local extension service.
+
+---
+
+## Self-Evaluation Loop
+
+The self-evaluation loop is the core capability that differentiates this system from a standard RAG pipeline. A standard pipeline retrieves and generates once — regardless of quality. This system evaluates its own output and decides whether it is good enough before returning it to the farmer.
+
+**Why this matters for agriculture specifically:** A farmer making a decision about switching from a chemical to a biological alternative may be committing thousands of dollars and risking crop yield. A vague or generic answer is not just unhelpful — it is potentially harmful. The self-evaluation loop ensures the system actively tries to improve its answer before delivering it.
+
+**Maximum retries:** Set to 2 by default. This means a worst case of 3 DuckDuckGo searches per farmer question. Configurable via the `MAX_RETRIES` constant in `app.py`.
+
+---
+
+## Tech Stack
+
+| Component | Technology | Cost |
+|---|---|---|
+| LLM | Groq — Llama 3.3 70B Versatile | Free tier |
+| Web Search | DuckDuckGo Search | Free — no key required |
+| Orchestration | LangGraph | Free — open source |
+| LLM Framework | LangChain | Free — open source |
+| Monitoring | LangSmith | Free tier — 5,000 traces/month |
+| Interface | Streamlit | Free — open source |
+| Hosting | Streamlit Community Cloud | Free |
+| Development | Google Colab | Free |
+| Version Control | GitHub | Free |
+
+**Total infrastructure cost: $0**
+
+---
+
+## Project Structure
+
+```
+ag-rag-system/
+│
+├── app.py                 # Main Streamlit application
+│                          # Contains full LangGraph pipeline,
+│                          # intent detection, and Streamlit UI
+│
+├── requirements.txt       # Python package dependencies
+│
+├── README.md              # This file
+│
+└── ag_rag_system.ipynb    # Google Colab development notebook
+                           # Used to build, test, and export app.py
+                           # Not required for deployment
+```
+
+---
+
+## Getting Started
+
+### Option A — Run Locally
+
+**Prerequisites:** Python 3.9 or higher
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/ag-rag-system.git
+cd ag-rag-system
+
+# Create and activate virtual environment
+python3 -m venv venv
+source venv/bin/activate  # Mac/Linux
+venv\Scripts\activate     # Windows
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the app
+streamlit run app.py
+```
+
+Open your browser at `http://localhost:8501`
+
+Enter your API keys in the sidebar and start asking questions.
+
+### Option B — Use the Colab Notebook
+
+1. Open `ag_rag_system.ipynb` in Google Colab
+2. Add your API keys to Colab Secrets (key icon in left sidebar)
+3. Run cells in order from top to bottom
+4. Use Cell 8 to test queries interactively
+5. Run Cell 9 + Final Cell to export and push to GitHub for deployment
+
+---
+
+## Deploying to Streamlit Community Cloud
+
+1. Fork or push this repository to your GitHub account
+2. Go to [share.streamlit.io](https://share.streamlit.io)
+3. Sign in with GitHub
+4. Click **New app**
+5. Select your repository and set main file path to `app.py`
+6. Click **Deploy**
+
+Your app will be live at `https://yourappname.streamlit.app`
+
+**For production deployment** — add your API keys as Streamlit Secrets rather than entering them via the sidebar UI. In your Streamlit Cloud dashboard go to App settings → Secrets and add:
+
+```toml
+GROQ_API_KEY = "your_groq_key"
+LANGCHAIN_API_KEY = "your_langsmith_key"
+```
+
+Then update `app.py` to load from Streamlit secrets:
+
+```python
+groq_key = st.secrets["GROQ_API_KEY"]
+langsmith_key = st.secrets["LANGCHAIN_API_KEY"]
+```
+
+---
+
+## API Keys Required
+
+| Key | Where to Get It | Cost |
+|---|---|---|
+| `GROQ_API_KEY` | [console.groq.com](https://console.groq.com) | Free — no credit card |
+| `LANGCHAIN_API_KEY` | [smith.langchain.com](https://smith.langchain.com) | Free tier — 5,000 traces/month |
+
+DuckDuckGo search requires no API key.
+
+---
+
+## Example Queries
+
+The system handles queries across all farming scales and operation types. Here are representative examples:
+
+**Pest Management**
+- *I spray chlorpyrifos on my 80 acre corn farm in Iowa for aphids. What biological alternatives are EPA registered?*
+- *I have fall armyworm pressure on my corn in Texas. What autonomous or precision technologies can help?*
+- *I am a certified organic vegetable grower in California. What biopesticides work for thrips on lettuce?*
+
+**Weed Management**
+- *I use glyphosate for weed control in soybeans in Illinois. I am organic certified. What are my NOP-approved options?*
+- *I hand weed my 5 acre vegetable farm in California. What mechanical or robotic alternatives work at my scale?*
+- *What autonomous weeding technologies work for large scale corn production in the Midwest?*
+
+**General Conversation (handled without running the pipeline)**
+- *Hi, how are you?* → Friendly response, no graph execution
+- *What is 2 + 2?* → Redirects to agricultural focus
+
+---
+
+## Monitoring with LangSmith
+
+Every query execution is automatically traced in LangSmith with zero additional configuration required. The `LANGCHAIN_TRACING_V2=true` environment variable enables tracing.
+
+**What LangSmith shows you per query:**
+
+- Full input and output at every node
+- Exact prompts sent to the LLM
+- Token usage and cost per node
+- Latency per node
+- Grade verdict and reason
+- Number of retries and what triggered them
+- Final answer delivered to farmer
+
+**Access your traces at:** [smith.langchain.com](https://smith.langchain.com)
+
+**Project name in LangSmith:** `ag-rag-system`
+
+Use LangSmith to identify:
+- Which queries consistently trigger retries — indicates retrieval gaps
+- Which grade failure reasons appear most often — indicates knowledge base gaps
+- Which queries hit maximum retries without passing — highest priority improvements
+- Average latency and cost per query — production planning data
+
+---
+
+## Development Workflow
+
+The recommended development workflow uses Google Colab for iteration and GitHub for deployment:
+
+```
+1. Open ag_rag_system.ipynb in Google Colab
+
+2. Make changes to node functions, prompts, or grading logic
+   in the relevant notebook cells
+
+3. Test changes using Cell 7 (fixed test query)
+   and Cell 8 (your own queries)
+
+4. When satisfied, run Cell 9a (%%writefile app.py)
+   to export the updated Streamlit app
+
+5. Run the Final Cell to commit and push to GitHub
+
+6. Streamlit Community Cloud auto-redeploys within 1-2 minutes
+
+7. Verify the live deployment works as expected
+```
+
+**Typical iteration cycle:** Change a prompt → test in Colab → push to GitHub → verify live — approximately 5 minutes end to end.
+
+---
+
+## Current Limitations
+
+**Search depth:** DuckDuckGo returns short snippets rather than full page content. This limits the specificity of answers — particularly for cost data, product-specific trial results, and organic certification details. Upgrading to Tavily Search API would significantly improve answer quality.
+
+**Source reliability:** DuckDuckGo has no domain filtering. Results may occasionally include low-quality sources alongside trusted ones. A future version should whitelist specific domains such as extension.org, attra.ncat.org, ipm.ucanr.edu, sare.org, and nrcs.usda.gov.
+
+**Model capability:** Llama 3.3 70B on Groq performs well for straightforward queries but may miss constraints or produce less structured output for complex multi-constraint questions. Upgrading to GPT-4o or Claude Sonnet would improve handling of complex queries.
+
+**Geography:** Currently optimized for USA farming contexts. Queries about other countries will return results but without the same depth of regional specificity.
+
+**Operations covered:** Currently focused on pest management and weed control. Irrigation, fertilization, harvesting, and crop monitoring are not yet in scope.
+
+**Rate limits:** Groq free tier has rate limits that may affect performance under heavy simultaneous use. Not a concern for small-scale testing but relevant for production deployment at scale.
+
+---
+
+## Roadmap
+
+**Near term**
+- Switch from DuckDuckGo to Tavily Search API for richer content retrieval and trusted domain filtering
+- Upgrade LLM to GPT-4o or Claude Sonnet for better handling of complex multi-constraint queries
+- Add conversation memory so farmers can ask follow-up questions in context
+- Expand coverage to disease management operations
+
+**Medium term**
+- Add irrigation, fertilization, and crop monitoring operations
+- Integrate USDA NRCS program database so the system can surface relevant cost-share programs alongside technology recommendations
+- Add EPA pesticide registration lookup so approval status is confirmed in real time rather than from search results
+- Build a curated ChromaDB document store from ATTRA, UC IPM, and Cornell Extension publications as a supplementary retrieval layer
+
+**Longer term**
+- MCP integration for dynamic tool selection — connecting USDA data, weather APIs, and farm management systems as tools the LLM can call based on query context
+- Multi-language support for Spanish-speaking farming communities
+- Mobile-optimized interface
+- Regional customization — state-specific extension service prioritization
+
+---
+
+## Contributing
+
+This project is in active development. If you are a farmer, agronomist, extension specialist, or agricultural researcher and want to contribute domain knowledge, source recommendations, or feedback on answer quality — that input is the most valuable contribution possible.
+
+For code contributions:
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/your-feature-name`
+3. Make your changes and test in Colab
+4. Push to your fork and open a pull request with a clear description of what changed and why
+
+For feedback on answer quality, use the LangSmith trace link to share specific examples of poor answers with context about what the correct answer should have been.
+
+---
+
+## License
+
+MIT License — see LICENSE file for details.
+
+---
+
+*Built to help USA farmers make informed decisions about transitioning to sustainable, autonomous, and precision agricultural practices.*
